@@ -47,6 +47,14 @@ def ensure_schema_compatible() -> None:
         if "esp32_ip" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE users ADD COLUMN esp32_ip VARCHAR(45)"))
+        if "full_name" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN full_name VARCHAR(128)"))
+    # user_esp32s is a fresh table: create_all() already handles it for new DBs,
+    # but pre-existing DBs created before it existed need it created here too.
+    if "users" in inspector.get_table_names() and "user_esp32s" not in inspector.get_table_names():
+        from app.models.models import UserEsp32
+        Base.metadata.create_all(bind=engine, tables=[UserEsp32.__table__])
 
 
 def get_db():

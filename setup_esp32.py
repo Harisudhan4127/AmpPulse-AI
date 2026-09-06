@@ -20,6 +20,7 @@ input being the Wi-Fi SSID/password:
 Usage:
     python3 setup_esp32.py                           # interactive menu (recommended)
     python3 setup_esp32.py --gui                     # start backend + frontend now
+    python3 setup_esp32.py --stop                    # stop backend + frontend
     python3 setup_esp32.py --status                  # show current state
     python3 setup_esp32.py --ssid MyWifi --password hunter2   # config + upload
     python3 setup_esp32.py --ssid MyWifi --password hunter2 --install-cli
@@ -35,6 +36,7 @@ import platform
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -50,6 +52,8 @@ ENV_FILE = BACKEND_DIR / ".env"
 SKETCH_FILE = ROOT / "arduino" / "amppulse_esp32" / "amppulse_esp32.ino"
 BACKEND_LOG = BACKEND_DIR / "uvicorn.log"
 FRONTEND_LOG = ROOT / "frontend" / "server.log"
+BACKEND_PID_FILE = BACKEND_DIR / "uvicorn.pid"
+FRONTEND_PID_FILE = FRONTEND_DIR / "server.pid"
 
 SKETCH_PLACEHOLDERS = {
     "WIFI_SSID": ("HOME", "YOUR_WIFI_SSID", ""),
@@ -186,6 +190,7 @@ def start_backend(port: int) -> None:
              "--host", "0.0.0.0", "--port", str(port)],
             cwd=str(BACKEND_DIR), stdout=fh, stderr=subprocess.STDOUT,
         )
+    BACKEND_PID_FILE.write_text(str(proc.pid))
     deadline = time.time() + 60
     while time.time() < deadline:
         if api_is_up(port):
@@ -245,6 +250,163 @@ def find_serial_port() -> str:
         if hits:
             return str(hits[0])
     return ""
+
+
+# ---------------------------------------------------------------- stop servers
+
+def find_pid_listening(port: int) -> int | None:
+    """Linux: find the pid listening on a TCP port via /proc/net/tcp."""
+    port_hex = f"{port:04X}"
+    inodes = set()
+    try:
+        with open("/proc/net/tcp") as fh:
+            fh.readline()
+            for line in fh:
+                parts = line.split()
+                if (len(parts) > 9 and parts[1].endswith(":" + port_hex)
+                        and parts[3] == "0A"):
+                    inodes.add(parts[9])
+    except OSError:
+        return None
+    if not inodes:
+        return None
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        fd_dir = f"/proc/{entry}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(f"{fd_dir}/{fd}")
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target[8:-1] in inodes:
+                return int(entry)
+    return None
+
+
+def _read_pidfile(path: Path) -> tuple[int, str]:
+    """Return (pid, extra) from a pid file, or (0, '')."""
+    if not Path(path).exists():
+        return 0, ""
+    try:
+        parts = Path(path).read_text().split()
+        return int(parts[0]), (parts[1] if len(parts) > 1 else "")
+    except (ValueError, OSError):
+        return 0, ""
+
+
+def _pid_for_port(port: int) -> int | None:
+    """Find the pid listening on a TCP port (Linux /proc, macOS lsof, Windows netstat)."""
+    if platform.system() == "Linux":
+        return find_pid_listening(port)
+    if platform.system() == "Darwin":
+        try:
+            out = subprocess.check_output(["lsof", "-ti", f"tcp:{port}"],
+                                          text=True, stderr=subprocess.DEVNULL)
+            return int(out.splitlines()[0].strip())
+        except Exception:
+            return None
+    if platform.system() == "Windows":
+        try:
+            out = subprocess.check_output(["netstat", "-ano"], text=True)
+            for line in out.splitlines():
+                if f":{port} " in line and "LISTENING" in line:
+                    return int(line.split()[-1])
+        except Exception:
+            pass
+    return None
+
+
+def _cmdline(pid: int) -> str:
+    if platform.system() == "Linux":
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_text(errors="ignore").replace("\0", " ")
+        except OSError:
+            return ""
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True).stdout
+        return out.strip()
+    except Exception:
+        return ""
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _terminate(pid: int, label: str, wait_s: int = 8) -> None:
+    if not pid:
+        return
+    print(f"  Stopping {label} (pid {pid})")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        if not _alive(pid):
+            print(f"  {label} stopped.")
+            return
+        time.sleep(0.3)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    print(f"  {label} had to be force-killed.")
+
+
+def stop_servers() -> None:
+    """Stop the AmpPulse backend and any frontend server this script started.
+
+    Prefers the recorded PIDs (so it never touches someone else's processes);
+    falls back to port scanning only for clearly-AmpPulse commands
+    (uvicorn / python http.server)."""
+    print("\n== Stopping AmpPulse servers")
+
+    # ---- Backend ----
+    port = backend_port()
+    pid, _ = _read_pidfile(BACKEND_PID_FILE)
+    if pid and not _alive(pid):
+        pid = 0
+    if not pid:
+        pid = _pid_for_port(port) or 0
+    if pid:
+        if "uvicorn" in _cmdline(pid).lower():
+            _terminate(pid, f"backend (0.0.0.0:{port})")
+        else:
+            print(f"  Port {port} is used by a non-AmpPulse process (pid {pid}) - leaving it alone.")
+    else:
+        print(f"  No backend detected on port {port}.")
+    BACKEND_PID_FILE.unlink(missing_ok=True)
+
+    # ---- Frontend(s) ----
+    fpid, fport = _read_pidfile(FRONTEND_PID_FILE)
+    if fpid and _alive(fpid):
+        _terminate(fpid, f"frontend (0.0.0.0:{fport or '?'})")
+    else:
+        # Fall back to scanning for python -m http.server instances we own.
+        found = False
+        for p in range(5500, 5511):
+            spid = _pid_for_port(p)
+            if spid and "http.server" in _cmdline(spid).lower():
+                _terminate(spid, f"frontend (0.0.0.0:{p})")
+                found = True
+        if not found:
+            print("  No AmpPulse frontend (python http.server) detected.")
+    FRONTEND_PID_FILE.unlink(missing_ok=True)
+
+    print("\n  Done. Restart anytime with menu option 4 (Run GUI) or `--gui`.")
 
 
 # ---------------------------------------------------------------- upload
@@ -402,10 +564,11 @@ def start_frontend_server() -> str:
         log(f"Starting frontend server on 0.0.0.0:{port} (log: {FRONTEND_LOG.name})")
         try:
             with FRONTEND_LOG.open("w") as fh:
-                subprocess.Popen([sys.executable, "-m", "http.server", str(port),
-                                  "--bind", "0.0.0.0"],
-                                 cwd=str(FRONTEND_DIR), stdout=fh,
-                                 stderr=subprocess.STDOUT)
+                proc = subprocess.Popen([sys.executable, "-m", "http.server", str(port),
+                                         "--bind", "0.0.0.0"],
+                                        cwd=str(FRONTEND_DIR), stdout=fh,
+                                        stderr=subprocess.STDOUT)
+            FRONTEND_PID_FILE.write_text(f"{proc.pid} {port}")
             time.sleep(1.2)
             if _page_ok(f"http://127.0.0.1:{port}", "/"):
                 print(f"[frontend] Frontend is up on http://localhost:{port}")
@@ -517,13 +680,14 @@ def menu() -> int:
   4) Run GUI   : start backend + frontend and open the browser
   5) Verify ESP32 web server (/data) by IP
   6) Show current status (backend, serial port, sketch Wi-Fi)
-  7) Install arduino-cli toolchain (needed for auto-upload)
-  8) Quit
+  7) Stop backend + frontend
+  8) Install arduino-cli toolchain (needed for auto-upload)
+  9) Quit
   ─────────────────────────────────────────────
 """)
     while True:
         try:
-            raw = input("Choose an option [1-8] (Enter=4): ")
+            raw = input("Choose an option [1-9] (Enter=4): ")
         except (KeyboardInterrupt, EOFError):
             print("\nBye 👋")
             return 0
@@ -548,9 +712,11 @@ def menu() -> int:
             elif choice == "6":
                 show_status()
             elif choice == "7":
+                stop_servers()
+            elif choice == "8":
                 cli = install_arduino_cli()
                 print(f"arduino-cli ready at {cli}")
-            elif choice == "8":
+            elif choice == "9":
                 print("\nBye 👋")
                 return 0
             else:
@@ -578,6 +744,8 @@ def main() -> int:
                     help="Show current backend/frontend/serial status")
     ap.add_argument("--gui", action="store_true",
                     help="Start backend + frontend and open the browser")
+    ap.add_argument("--stop", action="store_true",
+                    help="Stop the backend and frontend servers (menu 7)")
     ap.add_argument("--ssid", help="Wi-Fi SSID (prompted if not given)")
     ap.add_argument("--password", help="Wi-Fi password (prompted if not given)")
     ap.add_argument("--esp32-ip", help="ESP32 IP to verify /data against")
@@ -599,6 +767,10 @@ def main() -> int:
 
     if args.gui:
         run_gui()
+        return 0
+
+    if args.stop:
+        stop_servers()
         return 0
 
     # Ensure the backend .env is ready (GUI relies on it) even for one-shot runs.

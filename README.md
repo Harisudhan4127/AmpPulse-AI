@@ -40,7 +40,11 @@ python3 setup_esp32.py
 ```
 Menu: (1) configure Wi-Fi → upload → verify direct connection, (2) set Wi-Fi
 creds only, (3) upload, (4) run GUI (backend + frontend + browser),
-(5) verify ESP32 `/data` by IP, (6) status, (7) install arduino-cli.
+(5) verify ESP32 `/data` by IP, (6) status, (7) **stop backend + frontend**,
+(8) install arduino-cli.
+
+CLI flags: `--gui` starts the servers now, `--stop` stops the backend and
+frontend, `--status` shows current state.
 
 ### Manual quick start
 
@@ -66,14 +70,15 @@ Open `arduino/amppulse_esp32/amppulse_esp32.ino` in the Arduino IDE
 and press Upload — or use `setup_esp32.py` to do it automatically.
 The Serial Monitor (115200 baud) prints the assigned IP.
 
-**4. Connect the dashboard to the ESP32**
-In the dashboard, open the **📡 ESP32 Connect** view (sidebar), type the
-ESP32's IP (e.g. `192.168.1.8`) and press **Connect**. The IP is saved
-**per login** via `PUT /api/v1/user/esp32`, so it auto-reconnects next time.
-- Live cards update every 3s straight from the device
+**4. Connect the dashboard to your ESP32(s)**
+In the dashboard, open the **📡 ESP32 Connect** view (sidebar). Register an
+account from the login modal (or use `demo@amppulse.ai` / `Demo@12345`), then
+**Add & Connect** an ESP32 IP (e.g. `192.168.1.8`). You can save **multiple**
+ESP32s and switch between them anytime — they're remembered **per login**:
+- Live cards update every 3s straight from the active device
 - Relay toggles hit `/relay1/on|off` and `/relay2/on|off` instantly
-- Without an IP (or after Disconnect), everything gracefully falls back to
-  backend mode
+- Remove a device to fall back to backend mode for it
+- Without an active ESP32, everything gracefully falls back to backend mode
 
 > ⚠️ The sketch sets `Access-Control-Allow-Origin: *` on every response
 > (CORS) — this is what lets the browser read the ESP32's `/data` from the

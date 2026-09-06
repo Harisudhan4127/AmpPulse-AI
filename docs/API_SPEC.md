@@ -23,6 +23,20 @@ Health check. No auth.
 
 ---
 
+## `POST /api/v1/auth/register`
+Create a new user account → auto-login (returns a JWT).
+- Auth: none
+- Body: `{"email": "jane@example.com", "password": "secret1", "name": "Jane"}` (`name` optional; password min 6 chars)
+- **201**
+```json
+{"success": true, "access_token": "<jwt>", "token_type": "bearer",
+ "user": {"id": 2, "email": "jane@example.com", "full_name": "Jane", "role": "home"}}
+```
+- **409** `EMAIL_TAKEN` — email already registered
+- **422** `VALIDATION_ERROR` — invalid email or short password
+
+---
+
 ## `POST /api/v1/auth/login`
 User login → JWT.
 - Auth: none
@@ -30,7 +44,7 @@ User login → JWT.
 - **200**
 ```json
 {"success": true, "access_token": "<jwt>", "token_type": "bearer",
- "user": {"id": 1, "email": "demo@amppulse.ai", "role": "home"}}
+ "user": {"id": 1, "email": "demo@amppulse.ai", "full_name": null, "role": "home"}}
 ```
 - **401** `AUTH_FAILED` — invalid email or password
 
@@ -77,27 +91,40 @@ List devices belonging to the current user (frontend).
 ```
 - **404** `DEVICE_NOT_FOUND`
 
-## `GET /api/v1/user/esp32`
-Return the ESP32 address the current user saved for direct connection, with a live TCP reachability probe.
+## `GET /api/v1/user/esp32s`
+List every ESP32 the current user saved for direct connection, each with a live TCP reachability probe. Multiple devices are supported.
 - Auth: user JWT
 - **200**
 ```json
-{"success": true, "ip": "192.168.1.7", "port": 80,
- "connected": true, "latency_ms": 3.4, "error": null}
+{"success": true, "devices": [
+  {"id": 1, "name": "Living Room", "ip": "192.168.1.7", "port": 80,
+   "connected": true, "latency_ms": 3.4, "error": null}
+  ,{"id": 2, "name": "Bedroom", "ip": "192.168.1.8", "port": 80,
+   "connected": false, "latency_ms": null, "error": "TIMEOUT - ..."}
+]}
 ```
-  - `ip` is `null` if not configured. `connected` is `true`/`false` based on probing the saved address.
+  - `error` is `null` on reachable devices; `connected` reflects the probe.
 
-## `PUT /api/v1/user/esp32`
-Save (and remember per-login) the direct ESP32 IP used by the frontend to hit the device's own web server (port 80). Returns probe result.
+## `POST /api/v1/user/esp32`
+Add a new direct ESP32 target for the current user. Deduplicated by `ip + port`.
 - Auth: user JWT
-- Body: `{"ip": "192.168.1.7", "port": 80}`
-- **200** `{"success": true, "ip": "...", "port": 80, "connected": bool, "latency_ms": ..., "error": null | "..."}`
+- Body: `{"ip": "192.168.1.7", "port": 80, "name": "Living Room"}` (`port` and `name` optional)
+- **201** `{"success": true, "device": {"id": 1, "name": "...", "ip": "...", "port": 80, "connected": bool, "latency_ms": ..., "error": ...}}`
+- **409** `DUPLICATE_ESP32` — same ip+port already saved
 - **422** `VALIDATION_ERROR` — empty IP
 
-## `DELETE /api/v1/user/esp32`
-Forget the saved ESP32 address (returns to backend-only mode).
+## `PUT /api/v1/user/esp32/{esp32_id}`
+Update `ip` / `port` / `name` of one saved ESP32 (partial update) and re-probe it.
 - Auth: user JWT
-- **200** `{"success": true, "ip": null, "port": 80, "connected": false, "latency_ms": null, "error": null}`
+- Body: `{"name": "Main Hall"}` (any subset of `ip`, `port`, `name`)
+- **200** `{"success": true, "device": {...}}`
+- **404** `ESP32_NOT_FOUND` — id doesn't belong to this user
+
+## `DELETE /api/v1/user/esp32/{esp32_id}`
+Forget one saved ESP32 (returns to backend-only mode for that device).
+- Auth: user JWT
+- **200** `{"success": true, "devices": [ ...remaining list... ]}`
+- **404** `ESP32_NOT_FOUND`
 
 ## `PATCH /api/v1/devices/{device_id}/channels`
 Rename appliance channels.
@@ -196,6 +223,9 @@ ESP32 confirms it applied (or failed to apply) a command.
 | `UNAUTHORIZED` | 401 | Missing/invalid auth header or key |
 | `INVALID_TOKEN` | 401 | JWT expired or malformed |
 | `AUTH_FAILED` | 401 | Wrong login credentials |
+| `EMAIL_TAKEN` | 409 | Email already registered |
+| `ESP32_NOT_FOUND` | 404 | Saved ESP32 id doesn't belong to this user |
+| `DUPLICATE_ESP32` | 409 | Same ip+port already saved for this user |
 | `DEVICE_NOT_FOUND` | 404 | device_id doesn't exist |
 | `DEVICE_ALREADY_EXISTS` | 409 | Duplicate registration attempt |
 | `DEVICE_DISABLED` | 403 | Device soft-disabled by admin |

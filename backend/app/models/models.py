@@ -46,11 +46,32 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
+    full_name = Column(String(128), nullable=True)  # display name set at registration
     role = Column(String(32), default="home", nullable=False)  # home/organization/industrial/government
-    esp32_ip = Column(String(45), nullable=True)  # user-entered ESP32 address for direct connection
+    esp32_ip = Column(String(45), nullable=True)  # legacy single-IP column, migrated to user_esp32s
     created_at = Column(DateTime, default=utcnow)
 
     devices = relationship("Device", back_populates="owner", cascade="all, delete-orphan")
+    esp32s = relationship("UserEsp32", back_populates="user", cascade="all, delete-orphan")
+
+
+class UserEsp32(Base):
+    """A saved ESP32 direct-connection target for a user.
+
+    Multiple devices can be saved per account; the dashboard connects to one
+    at a time but switches between them freely. Each entry is the ESP32's own
+    web server (port 80) address.
+    """
+    __tablename__ = "user_esp32s"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(64), default="ESP32", nullable=False)
+    ip = Column(String(45), nullable=False)
+    port = Column(Integer, default=80, nullable=False)
+    created_at = Column(DateTime, default=utcnow)
+
+    user = relationship("User", back_populates="esp32s")
 
 
 class Device(Base):

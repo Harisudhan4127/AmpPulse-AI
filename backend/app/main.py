@@ -20,7 +20,7 @@ from app.core.database import (
 )
 from app.core.errors import ApiError, api_error_handler, validation_error_handler, unhandled_error_handler
 from app.core.security import hash_password
-from app.models.models import User
+from app.models.models import User, UserEsp32
 from app.routers import auth, devices, telemetry, commands, health, user_settings
 
 settings = get_settings()
@@ -44,6 +44,20 @@ async def lifespan(_app: FastAPI):
                 role="home",
             ))
             db.commit()
+
+        # One-time migration: the old single esp32_ip column -> user_esp32s.
+        # Once moved, the legacy column is cleared so this never re-runs.
+        for legacy in db.query(User).filter(User.esp32_ip.isnot(None)).all():
+            ip = legacy.esp32_ip.strip()
+            already = db.query(UserEsp32).filter(
+                UserEsp32.user_id == legacy.id,
+                UserEsp32.ip == ip,
+                UserEsp32.port == 80,
+            ).first()
+            if ip and not already:
+                db.add(UserEsp32(user_id=legacy.id, ip=ip, port=80, name="ESP32"))
+            legacy.esp32_ip = None
+        db.commit()
     finally:
         db.close()
 

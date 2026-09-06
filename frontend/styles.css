@@ -1284,6 +1284,70 @@ input { font: inherit; }
 .bar-item b.ok { color: var(--accent); }
 .bar-item b.warn { color: var(--orange); }
 
+/* Connection bar device switcher */
+.conn-select {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  font-size: 13px;
+  font-family: var(--font-sans);
+  background: white;
+  color: var(--text-main);
+  max-width: 220px;
+  cursor: pointer;
+}
+.conn-select:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px var(--cyan-bg);
+}
+.conn-chip {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--accent-bg);
+  color: var(--accent);
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
+/* Saved ESP32 device list */
+.dev-list { display: flex; flex-direction: column; gap: 8px; }
+.dev-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: white;
+}
+.dev-row.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.dev-status { display: grid; place-items: center; flex-shrink: 0; }
+.dev-status.ok .conn-dot { background: var(--accent); animation: pulse-dot 2s infinite; }
+.dev-status.warn .conn-dot { background: var(--orange); }
+.dev-main { flex: 1; min-width: 0; }
+.dev-main b { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.dev-main small { display: block; font-size: 12px; color: var(--text-muted); margin-top: 2px; font-family: var(--font-mono); }
+.dev-main small.warn { color: var(--orange); font-family: var(--font-sans); }
+.dev-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.btn-secondary {
+  background: var(--border-light);
+  color: var(--text-secondary);
+}
+.btn-secondary:hover { background: var(--border); }
+.btn-warn {
+  background: var(--orange-bg);
+  color: var(--orange);
+}
+.btn-warn:hover { background: var(--orange); color: white; }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1080px) {
   .nav-links { display: none; }

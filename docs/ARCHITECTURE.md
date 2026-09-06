@@ -65,10 +65,14 @@ intentionally, per the "don't over-engineer the MVP" constraint.
 
 ## 4.5 Direct ESP32 connection mode
 
-The dashboard can talk to the ESP32's **own web server** (port 80) directly,
-bypassing the backend for live telemetry and relay control. The user enters
-the ESP32's IP (shown in the Serial Monitor) in the dashboard's "ESP32 Connect"
-bar; the IP is saved per login via `PUT /api/v1/user/esp32` and probed for
+The dashboard can talk to each ESP32's **own web server** (port 80) directly,
+bypassing the backend for live telemetry and relay control. Users can save
+**multiple** ESP32s per account (`user_esp32s` table) and switch between them
+freely; the active device drives the live cards, chart, and relay controls,
+while the backend keeps handling login, analytics, and reports.
+
+The IPs are saved per login via `POST /api/v1/user/esp32` (list = 
+`GET /api/v1/user/esp32s`, update/delete by id) and each is probed for
 reachability + latency.
 
 ```

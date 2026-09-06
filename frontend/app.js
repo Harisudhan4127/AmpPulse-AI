@@ -43,6 +43,13 @@ const Api = {
     this.setToken(data.access_token);
     return data.user;
   },
+  async register(email, password, name) {
+    const data = await this._request("/api/v1/auth/register", {
+      method: "POST", body: JSON.stringify({ email, password, name: name || undefined })
+    });
+    this.setToken(data.access_token);
+    return data.user;
+  },
   async listDevices() {
     const data = await this._request("/api/v1/devices");
     return data.devices;
@@ -69,18 +76,26 @@ const Api = {
       body: JSON.stringify({ channel_labels: labels })
     });
   },
-  /* ---- Saved per-user ESP32 direct connection (keyed by login) ---- */
-  async getEsp32Settings() {
-    return this._request("/api/v1/user/esp32");
+  /* ---- Saved per-user ESP32 direct connections (keyed by login) ----
+   * Each user can save MULTIPLE ESP32 addresses and switch between them. */
+  async listEsp32s() {
+    const data = await this._request("/api/v1/user/esp32s");
+    return data.devices || [];
   },
-  async setEsp32Settings(ip, port = 80) {
+  async addEsp32(ip, port = 80, name) {
     return this._request("/api/v1/user/esp32", {
-      method: "PUT",
-      body: JSON.stringify({ ip, port })
+      method: "POST",
+      body: JSON.stringify({ ip, port, name: name || undefined })
     });
   },
-  async clearEsp32Settings() {
-    return this._request("/api/v1/user/esp32", { method: "DELETE" });
+  async updateEsp32(id, patch) {
+    return this._request(`/api/v1/user/esp32/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(patch)
+    });
+  },
+  async deleteEsp32(id) {
+    return this._request(`/api/v1/user/esp32/${id}`, { method: "DELETE" });
   },
 };
 
@@ -119,11 +134,18 @@ const State = {
   pollTimer: null,
   userName: "User",
   /* ESP32 direct connection (user-set IP, saved per login via backend).
+   * `State.esp32` mirrors the ACTIVE device; `State.esp32s` is the full
+   * saved device list (multiple ESP32s supported) and `activeEsp32Id`
+   * points at whichever saved device is currently driving the dashboard.
    * direct=true  -> live data + relay control go straight to the device.
    * direct=false -> everything goes through the FastAPI backend. */
+  activeEsp32Id: null,
+  esp32s: [],                 // saved devices: [{id,name,ip,port,connected,latency_ms,error}]
+  esp32Form: { name: "ESP32", ip: "", port: 80 },  // "add a device" form
   esp32: {
     ip: "",
     port: 80,
+    name: "",
     connected: false,
     latencyMs: null,
     error: null,
@@ -131,6 +153,7 @@ const State = {
     draft: "",
     live: null,       // latest reading fetched directly from the ESP32
     lastLiveAt: null, // Date.now() of the last successful ESP32 fetch
+    backendWarn: null, // non-fatal error from saving the IP to the backend
   },
 }
 
@@ -187,7 +210,36 @@ function showLanding() {
 
 function openLogin() {
   document.getElementById("loginModal").classList.remove("hidden");
+  authMode = "login";
+  renderAuthMode();
   document.getElementById("loginId").focus();
+}
+
+let authMode = "login"; // "login" | "register"
+
+function toggleAuthMode() {
+  authMode = authMode === "login" ? "register" : "login";
+  renderAuthMode();
+  const el = authMode === "login" ? "loginId" : "regName";
+  setTimeout(() => document.getElementById(el).focus(), 0);
+}
+
+function renderAuthMode() {
+  const register = authMode === "register";
+  document.getElementById("authTitle").textContent = register ? "Create your account" : "Welcome back";
+  document.getElementById("authSubtitle").textContent = register
+    ? "Register to start saving your energy dashboard."
+    : "Sign in to your energy dashboard.";
+  document.getElementById("loginFields").classList.toggle("hidden", register);
+  document.getElementById("registerFields").classList.toggle("hidden", !register);
+  const toggle = document.getElementById("authToggle");
+  if (toggle) {
+    toggle.innerHTML = register
+      ? `Already have an account? <a href="#" onclick="toggleAuthMode();return false;">Sign in</a>`
+      : `Don't have an account? <a href="#" onclick="toggleAuthMode();return false;">Create one</a>`;
+  }
+  const errEl = document.getElementById("loginError");
+  errEl.style.display = "none";
 }
 
 function closeModal() {
@@ -197,7 +249,10 @@ function closeModal() {
 
 function logout() {
   Api.clearToken();
-  State.esp32 = { ip: "", port: 80, connected: false, latencyMs: null, error: null, direct: false, draft: "", live: null, lastLiveAt: null };
+  State.activeEsp32Id = null;
+  State.esp32s = [];
+  State.esp32Form = { name: "ESP32", ip: "", port: 80 };
+  State.esp32 = { ip: "", port: 80, name: "", connected: false, latencyMs: null, error: null, direct: false, draft: "", live: null, lastLiveAt: null, backendWarn: null };
   showLanding();
   toast("Logged out successfully");
 }
@@ -216,18 +271,56 @@ async function enterDashboard() {
 
   try {
     const user = await Api.login(email, password);
-    State.userName = user.email?.split("@")[0] || "User";
-    closeModal();
-    document.getElementById("landing").classList.add("hidden");
-    document.querySelector(".topbar").classList.add("hidden");
-    document.getElementById("dashboard").classList.remove("hidden");
-    document.getElementById("userAvatar").textContent = State.userName[0].toUpperCase();
-    window.scrollTo(0, 0);
-    startDashboard();
+    finishLogin(user);
   } catch (err) {
     errEl.textContent = err.message || "Login failed. Check your credentials.";
     errEl.style.display = "block";
   }
+}
+
+async function registerAndEnter() {
+  const name = document.getElementById("regName").value.trim();
+  const email = document.getElementById("regEmail").value.trim();
+  const password = document.getElementById("regPassword").value;
+  const confirm = document.getElementById("regConfirm").value;
+  const errEl = document.getElementById("loginError");
+  errEl.style.display = "none";
+
+  if (!email || !password) {
+    errEl.textContent = "Please enter email and password.";
+    errEl.style.display = "block";
+    return;
+  }
+  if (password.length < 6) {
+    errEl.textContent = "Password must be at least 6 characters.";
+    errEl.style.display = "block";
+    return;
+  }
+  if (password !== confirm) {
+    errEl.textContent = "Passwords do not match.";
+    errEl.style.display = "block";
+    return;
+  }
+
+  try {
+    const user = await Api.register(email, password, name);
+    finishLogin(user);
+    toast(`Account created \u2014 welcome, ${user.full_name || user.email.split("@")[0]}!`);
+  } catch (err) {
+    errEl.textContent = err.message || "Registration failed.";
+    errEl.style.display = "block";
+  }
+}
+
+function finishLogin(user) {
+  State.userName = user.full_name?.trim() || user.email?.split("@")[0] || "User";
+  closeModal();
+  document.getElementById("landing").classList.add("hidden");
+  document.querySelector(".topbar").classList.add("hidden");
+  document.getElementById("dashboard").classList.remove("hidden");
+  document.getElementById("userAvatar").textContent = State.userName[0].toUpperCase();
+  window.scrollTo(0, 0);
+  startDashboard();
 }
 
 // ==================== Dashboard Init ====================
@@ -245,23 +338,38 @@ async function startDashboard() {
   State.pollTimer = setInterval(refreshData, 3000);
 }
 
-/* Fetch the logged-in user's saved ESP32 IP from the backend and, if it is
- * reachable, switch the dashboard to direct-connection mode automatically. */
+/* Restore the logged-in user's saved ESP32 devices from the backend and
+ * auto-activate one on login. Preference: the previously active device, else
+ * the first reachable one. Direct mode only turns on when it answers. */
 async function loadEsp32Settings() {
   try {
-    const settings = await Api.getEsp32Settings();
-    State.esp32.ip = settings.ip || "";
-    State.esp32.port = settings.port || 80;
-    State.esp32.draft = State.esp32.ip;
-    State.esp32.connected = !!settings.connected;
-    State.esp32.latencyMs = settings.latency_ms ?? null;
-    State.esp32.error = settings.error ?? null;
-    State.esp32.direct = !!settings.connected;
-    if (State.esp32.direct) {
-      toast(`ESP32 connected: ${State.esp32.ip}`);
-    }
+    const list = await Api.listEsp32s();
+    State.esp32s = Array.isArray(list) ? list : [];
   } catch (e) {
     /* Backend unreachable or not logged in - direct mode stays off. */
+    return;
+  }
+
+  const pick = State.esp32s.find(d => d.id === State.activeEsp32Id)
+    || State.esp32s.find(d => d.connected)
+    || State.esp32s[0]
+    || null;
+  if (!pick) {
+    State.activeEsp32Id = null;
+    return;
+  }
+
+  State.activeEsp32Id = pick.id;
+  State.esp32.ip = pick.ip;
+  State.esp32.port = pick.port || 80;
+  State.esp32.name = pick.name || "ESP32";
+  State.esp32.draft = pick.ip;
+  State.esp32.connected = !!pick.connected;
+  State.esp32.latencyMs = pick.latency_ms ?? null;
+  State.esp32.error = pick.error ?? null;
+  State.esp32.direct = !!pick.connected;
+  if (State.esp32.direct) {
+    toast(`ESP32 connected: ${State.esp32.ip}`);
   }
 }
 
@@ -686,6 +794,8 @@ function connectionBar() {
   const statusText = e.connected
     ? `● Connected to ${e.ip}${e.latencyMs != null ? ` \u00b7 ${e.latencyMs} ms` : ""}`
     : (e.ip ? `${e.error || "● ESP32 not responding"}` : "● Not connected \u2014 backend mode");
+  const deviceOpts = State.esp32s.map(d =>
+    `<option value="${d.id}" ${d.id === State.activeEsp32Id ? "selected" : ""}>${escapeHtml(d.name || "ESP32")} (${d.ip})</option>`).join("");
   return `
     <div class="conn-bar" id="connBar">
       <div class="conn-left">
@@ -696,19 +806,37 @@ function connectionBar() {
         </div>
       </div>
       <div class="conn-actions">
+        ${State.esp32s.length
+          ? `<select id="esp32Select" class="conn-select" onchange="esp32SelectChange(this.value)">
+              ${deviceOpts}
+            </select>`
+          : ""}
         <input id="esp32IpInput" type="text" placeholder="192.168.1.7"
           value="${draft}" oninput="State.esp32.draft=this.value" spellcheck="false" />
         <button class="btn btn-primary btn-sm" onclick="connectEsp32()">Connect</button>
         ${e.connected ? `<button class="btn btn-danger btn-sm" onclick="disconnectEsp32()">Disconnect</button>` : ""}
       </div>
       <div class="conn-status ${statusCls}"><span class="conn-dot"></span>${statusText}</div>
+      ${e.backendWarn && e.connected ? `<div class="conn-status warn" style="margin-left:auto">
+        <span class="conn-dot"></span>IP saved on device only \u2014 backend rejected it (${e.backendWarn})</div>` : ""}
     </div>`;
 }
 
+function esp32SelectChange(id) {
+  const dev = State.esp32s.find(d => String(d.id) === String(id));
+  if (!dev) return;
+  State.esp32.draft = dev.ip;
+  State.esp32.port = dev.port || 80;
+  connectEsp32();
+}
+
 /* Connect (and save) the ESP32 IP for the current login. The backend stores
- * it per user so the next login resumes the direct connection automatically. */
+ * it per user so the next login resumes the direct connection automatically.
+ * Multiple devices are supported - each connect becomes a saved, switchable
+ * entry; the dashboard drives whichever is active. */
 async function connectEsp32() {
   const ip = (document.getElementById("esp32IpInput")?.value || State.esp32.draft || "").trim();
+  const port = State.esp32.port || 80;
   if (!ip) {
     toast("Enter the ESP32 IP address first (shown in the Serial Monitor).");
     return;
@@ -718,65 +846,122 @@ async function connectEsp32() {
   renderActiveTab();
   toast(`Connecting to ESP32 at ${ip}...`);
 
-  let ok = false;
-  let latency = null;
-  let err = null;
-  /* 1) Probe reachability via the backend (saved per login). */
-  try {
-    const settings = await Api.setEsp32Settings(ip, State.esp32.port);
-    ok = !!settings.connected;
-    latency = settings.latency_ms ?? null;
-    err = settings.error ?? null;
-  } catch (e) {
-    err = `${e.message || "Backend save failed"} \u2014 trying direct connection anyway.`;
-    /* Still attempt a live fetch straight to the device. */
-  }
-
-  /* 2) Confirm end-to-end by fetching real data from /data. */
-  if (ok) {
+  /* 1) Find the saved entry, or add a new one - best effort, NEVER fatal.
+   *    A stale/old backend (or a missing route) must not stop a direct
+   *    connection. */
+  let backendErr = null;
+  let rec = State.esp32s.find(d => d.ip === ip && (d.port || 80) === port) || null;
+  if (!rec) {
     try {
-      const live = await esp32Fetch("/data");
-      State.esp32.live = normalizeEsp32Reading(live);
-      State.esp32.lastLiveAt = Date.now();
-    } catch (fetchErr) {
-      ok = false;
-      err = fetchErr.message || "Reachable but /data failed";
+      const res = await Api.addEsp32(ip, port, State.esp32Form.name || "ESP32");
+      rec = res.device || null;
+    } catch (e) {
+      backendErr = e.message || "Backend save failed";
     }
   }
 
-  if (ok) {
+  /* 2) Confirm end-to-end by fetching real data from /data. This is the only
+   *    test that matters - it works even if the backend route is down. */
+  let live = null;
+  let directErr = null;
+  let latency = null;
+  try {
+    const t0 = performance.now();
+    const raw = await esp32Fetch("/data");
+    latency = Math.round(performance.now() - t0);
+    live = normalizeEsp32Reading(raw);
+  } catch (fetchErr) {
+    directErr = fetchErr.message || `Cannot reach ESP32 at ${ip}.`;
+  }
+
+  if (live) {
+    State.activeEsp32Id = rec ? rec.id : null;
     State.esp32.ip = ip;
+    State.esp32.port = port;
+    State.esp32.name = rec ? rec.name : "ESP32";
     State.esp32.connected = true;
     State.esp32.latencyMs = latency;
     State.esp32.error = null;
+    State.esp32.backendWarn = backendErr;   // "Request failed (404)" etc., non-fatal
     State.esp32.direct = true;
-    State.latestReading = State.esp32.live;
-    toast(`ESP32 connected: ${ip} \u2014 live data flowing.`);
+    State.esp32.live = live;
+    State.esp32.lastLiveAt = Date.now();
+    State.latestReading = live;
+    toast(backendErr
+      ? `ESP32 connected: ${ip} \u2014 but the backend rejected saving it.`
+      : `ESP32 connected: ${ip} \u2014 live data flowing.`);
   } else {
-    /* Save the IP anyway (so the box is remembered) but stay in backend mode. */
     State.esp32.ip = ip;
+    State.esp32.port = port;
     State.esp32.connected = false;
-    State.esp32.error = err;
+    State.esp32.backendWarn = null;
     State.esp32.direct = false;
-    toast(err || `Could not connect to ESP32 at ${ip}.`);
+    State.esp32.error = directErr || backendErr || `Could not connect to ESP32 at ${ip}.`;
+    toast(State.esp32.error);
   }
   State.esp32.connecting = false;
+  syncEsp32List();
   renderActiveTab();
   refreshData();
 }
 
-/* Turn the direct connection off and return to backend-only mode. */
-async function disconnectEsp32() {
+/* Re-pull the backend's device list (probes included) and keep the active id. */
+async function syncEsp32List() {
+  try {
+    State.esp32s = await Api.listEsp32s();
+  } catch (e) { /* keep last known list */ }
+}
+
+/* Switch the active dashboard device to one of the saved ESP32s. */
+async function activateEsp32Dev(id) {
+  const dev = State.esp32s.find(d => String(d.id) === String(id));
+  if (!dev) { toast("Device not found."); return; }
+  State.esp32.draft = dev.ip;
+  State.esp32.port = dev.port || 80;
+  State.activeEsp32Id = dev.id;
+  connectEsp32();
+}
+
+/* Forget one saved device completely. */
+async function deleteEsp32Dev(id) {
+  if (!confirm(`Remove this ESP32 from your saved devices?`)) return;
+  try {
+    const res = await Api.deleteEsp32(id);
+    State.esp32s = res.devices || [];
+    if (String(State.activeEsp32Id) === String(id)) {
+      await disconnectEsp32(true);
+    }
+    renderActiveTab();
+    toast("ESP32 removed from your saved devices.");
+  } catch (e) {
+    toast(e.message || "Could not remove device.");
+  }
+}
+
+/* Add a device from the "add" form and connect to it. */
+async function addEsp32Dev() {
+  const name = (document.getElementById("devNameInput")?.value || "").trim();
+  const ip = (document.getElementById("devIpInput")?.value || "").trim();
+  const port = Number(document.getElementById("devPortInput")?.value) || 80;
+  State.esp32Form = { name, ip, port };
+  if (!ip) { toast("Enter the ESP32 IP address."); return; }
+  State.esp32.draft = ip;
+  State.esp32.port = port;
+  const res = await connectEsp32();
+  return res;
+}
+
+/* Turn the direct connection off and return to backend-only mode. The saved
+ * device is KEPT in the list - only the active session is dropped. Pass
+ * keepSaved=true when the caller already deleted the entry. */
+async function disconnectEsp32(keepSaved) {
+  State.activeEsp32Id = null;
   State.esp32.direct = false;
   State.esp32.connected = false;
   State.esp32.live = null;
   State.esp32.error = null;
-  try {
-    await Api.clearEsp32Settings();
-    toast("ESP32 direct connection cleared. Backend mode restored.");
-  } catch (e) {
-    toast("Direct connection cleared (backend save failed).");
-  }
+  State.esp32.backendWarn = null;
+  if (!keepSaved) syncEsp32List();
   /* Re-pull latest reading from the backend device if there is one. */
   if (State.activeDeviceId) {
     try {
@@ -786,42 +971,73 @@ async function disconnectEsp32() {
     } catch (e) { /* ignore */ }
   }
   renderActiveTab();
+  toast("ESP32 direct connection cleared. Backend mode restored.");
 }
 
 // ==================== VIEW: ESP32 Connect ====================
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
 function esp32ConnectView() {
   const e = State.esp32;
   const draft = e.draft !== undefined ? e.draft : e.ip;
+  const f = State.esp32Form;
   const issueMsg = !State.esp32.ip && !State.activeDeviceId
     ? "Static override \u2014 you can see live data even before you register a backend device."
     : "";
 
+  const deviceRows = State.esp32s.length
+    ? State.esp32s.map(d => `
+      <div class="dev-row ${String(d.id) === String(State.activeEsp32Id) ? "active" : ""}">
+        <div class="dev-status ${d.connected ? "ok" : "warn"}"><span class="conn-dot"></span></div>
+        <div class="dev-main">
+          <b>${escapeHtml(d.name || "ESP32")} ${String(d.id) === String(State.activeEsp32Id) ? `<span class="conn-chip">ACTIVE</span>` : ""}</b>
+          <small>${escapeHtml(d.ip)}:${d.port || 80}${d.latency_ms != null ? ` \u00b7 ${d.latency_ms} ms` : ""}</small>
+          ${d.error ? `<small class="warn">${escapeHtml(d.error)}</small>` : ""}
+        </div>
+        <div class="dev-actions">
+          <button class="btn btn-sm ${String(d.id) === String(State.activeEsp32Id) && e.connected ? "btn-warn" : "btn-primary"}"
+            onclick="activateEsp32Dev(${d.id})">
+            ${String(d.id) === String(State.activeEsp32Id) && e.connected ? "Reconnect" : "Connect"}
+          </button>
+          <button class="btn btn-danger btn-sm" onclick="deleteEsp32Dev(${d.id})">Remove</button>
+        </div>
+      </div>`).join("")
+    : `<div class="empty-state" style="padding:14px"><div class="empty-state-icon">📡</div><h3>No saved ESP32 yet</h3><p>Add one below, or connect by IP on the fly.</p></div>`;
+
   return `
     <div class="panel">
-      <div class="panel-head"><h3>Connect Your ESP32</h3><small>Links the hardware web server to this dashboard</small></div>
+      <div class="panel-head"><h3>Your ESP32 Devices</h3><small>Multiple devices, saved per login \u2014 switch anytime</small></div>
       <div style="display:flex;flex-wrap:wrap;gap:12px;padding:10px 0">
-        <label class="esp-label">ESP32 IP ADDRESS
-          <input id="esp32BigIp" type="text" placeholder="192.168.1.7" value="${draft}"
-            oninput="State.esp32.draft=this.value" spellcheck="false" />
+        <label class="esp-label" style="flex:1;min-width:150px">NAME
+          <input id="devNameInput" type="text" placeholder="Living Room" value="${escapeHtml(f.name)}"
+            oninput="State.esp32Form.name=this.value" />
+        </label>
+        <label class="esp-label" style="flex:1;min-width:170px">ESP32 IP ADDRESS
+          <input id="devIpInput" type="text" placeholder="192.168.1.7" value="${escapeHtml(f.ip)}"
+            oninput="State.esp32Form.ip=this.value" spellcheck="false" />
         </label>
         <label class="esp-label">PORT
-          <input id="esp32BigPort" type="number" min="1" max="65535" value="${e.port}" style="width:90px" />
+          <input id="devPortInput" type="number" min="1" max="65535" value="${f.port || 80}" style="width:90px"
+            oninput="State.esp32Form.port=Number(this.value)||0" />
         </label>
-        <button class="btn btn-primary" onclick="connectEsp32From(this)">
-          ${e.connected ? "Reconnect" : "Connect"} ESP32
-        </button>
-        ${e.connected ? `<button class="btn btn-danger" onclick="disconnectEsp32()">Disconnect</button>` : ""}
+        <button class="btn btn-primary" onclick="addEsp32Dev()">Add &amp; Connect</button>
+        <button class="btn btn-secondary" onclick="connectEsp32From(this)">Connect by IP</button>
       </div>
       <p style="color:var(--text-muted);font-size:12px;margin-top:6px;line-height:1.6;">
         The ESP32 sketch runs its own web server on port 80. Enter the IP shown in the Arduino Serial Monitor
-        (e.g. <code>http://192.168.1.7</code>). The address is saved to your login, so it reconnects automatically
-        next time. ${issueMsg}
+        (e.g. <code>192.168.1.7</code>). "Add &amp; Connect" saves the device to your login; the dashboard drives
+        whichever device is active. ${issueMsg}
       </p>
+      <div class="dev-list" style="margin-top:10px">${deviceRows}</div>
     </div>
 
     <div class="dash-grid-equal" style="margin-top:14px">
       <div class="panel">
-        <div class="panel-head"><h3>ESP32 Live Reading</h3><small>Straight from the device</small></div>
+        <div class="panel-head"><h3>Active Device \u2014 Live Reading</h3><small>Straight from the device</small></div>
         ${e.live ? `
           <div class="sens-grid" style="grid-template-columns:1fr 1fr">
             <div class="sens-card"><div class="sens-icon volt">🔌</div><div class="sens-info"><small>VOLTAGE</small><strong>${fmt(e.live.voltage, 1, " V")}</strong></div></div>
@@ -829,27 +1045,30 @@ function esp32ConnectView() {
             <div class="sens-card"><div class="sens-icon power">⚡</div><div class="sens-info"><small>POWER</small><strong>${fmt(e.live.power, 0, " W")}</strong></div></div>
             <div class="sens-card"><div class="sens-icon temp">🌡</div><div class="sens-info"><small>TEMPERATURE</small><strong>${fmt(e.live.temperature, 1, " \u00b0C")}</strong></div></div>
           </div>
-        ` : `<div class="empty-state"><div class="empty-state-icon">📡</div><h3>No live reading yet</h3><p>Connect to the ESP32 above to stream live sensor data.</p></div>`}
+        ` : `<div class="empty-state"><div class="empty-state-icon">📡</div><h3>No live reading yet</h3><p>Connect to one of your ESP32 devices above to stream live sensor data.</p></div>`}
       </div>
       <div class="panel">
         <div class="panel-head"><h3>Connection Status</h3><small>Direct vs backend</small></div>
         <div class="bar-item"><span>Source</span><b>${e.direct ? `ESP32 direct (${e.ip})` : "Backend / registered device"}</b></div>
         <div class="bar-item"><span>Status</span><b class="${e.connected ? "ok" : "warn"}">${e.connected ? "● Connected" : (e.ip ? "● Not responding" : "● Not configured")}</b></div>
         ${e.latencyMs != null ? `<div class="bar-item"><span>Latency</span><b>${e.latencyMs} ms</b></div>` : ""}
-        ${e.error ? `<div class="bar-item"><span>Error</span><b class="warn">${e.error}</b></div>` : ""}
+        ${e.error ? `<div class="bar-item"><span>Error</span><b class="warn">${escapeHtml(e.error)}</b></div>` : ""}
+        ${e.backendWarn ? `<div class="bar-item"><span>Backend</span><b class="warn">${escapeHtml(e.backendWarn)} \u2014 restart it from this repo (or connect will still work in direct mode)</b></div>` : ""}
         <hr style="border:0;border-top:1px solid var(--border-light);margin:12px 0" />
         <p style="font-size:12px;color:var(--text-muted);line-height:1.6;">
           ${e.direct
-            ? "Live readings & relay switches go directly to the ESP32. Analytics, history and reports continue to use the backend when a device is registered."
-            : "Everything goes through the FastAPI backend. Add the ESP32 IP above to connect hardware-to-dashboard instantly."}
+            ? `Live readings & relay switches go directly to the ESP32. Analytics, history and reports continue to use the backend when a device is registered.`
+            : `Everything goes through the FastAPI backend. Add an ESP32 IP above to connect hardware-to-dashboard instantly.`}
         </p>
       </div>
     </div>`;
 }
 
 function connectEsp32From(btn) {
-  const ipInput = document.getElementById("esp32BigIp");
-  const portInput = document.getElementById("esp32BigPort");
+  const ipInput = document.getElementById("devIpInput");
+  const portInput = document.getElementById("devPortInput");
+  const nameInput = document.getElementById("devNameInput");
+  if (nameInput) State.esp32Form.name = nameInput.value;
   if (ipInput) State.esp32.draft = ipInput.value;
   if (portInput) State.esp32.port = Number(portInput.value) || 80;
   connectEsp32();

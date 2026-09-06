@@ -288,24 +288,54 @@
         <button class="modal-close" onclick="closeModal()">&times;</button>
         <div class="modal-header">
           <span class="section-tag">AMPULSE AI ACCESS</span>
-          <h2>Welcome back</h2>
-          <p>Sign in to your energy dashboard.</p>
+          <h2 id="authTitle">Welcome back</h2>
+          <p id="authSubtitle">Sign in to your energy dashboard.</p>
         </div>
-        <div class="form-group">
-          <label for="loginId">EMAIL</label>
-          <input id="loginId" type="email" placeholder="demo@amppulse.ai" autocomplete="email" />
+
+        <div id="loginFields">
+          <div class="form-group">
+            <label for="loginId">EMAIL</label>
+            <input id="loginId" type="email" placeholder="demo@amppulse.ai" autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label for="loginPassword">PASSWORD</label>
+            <input id="loginPassword" type="password" placeholder="Enter password" autocomplete="current-password" />
+          </div>
+          <button class="btn btn-primary btn-full" onclick="enterDashboard()">
+            Secure Login
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
+          <div class="form-hint">
+            <small>Demo: demo@amppulse.ai / Demo@12345</small>
+          </div>
         </div>
-        <div class="form-group">
-          <label for="loginPassword">PASSWORD</label>
-          <input id="loginPassword" type="password" placeholder="Enter password" autocomplete="current-password" />
+
+        <div id="registerFields" class="hidden">
+          <div class="form-group">
+            <label for="regName">NAME <small style="font-weight:400">(optional)</small></label>
+            <input id="regName" type="text" placeholder="Jane" autocomplete="name" />
+          </div>
+          <div class="form-group">
+            <label for="regEmail">EMAIL</label>
+            <input id="regEmail" type="email" placeholder="you@example.com" autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label for="regPassword">PASSWORD</label>
+            <input id="regPassword" type="password" placeholder="Min 6 characters" autocomplete="new-password" />
+          </div>
+          <div class="form-group">
+            <label for="regConfirm">CONFIRM PASSWORD</label>
+            <input id="regConfirm" type="password" placeholder="Repeat password" autocomplete="new-password" />
+          </div>
+          <button class="btn btn-primary btn-full" onclick="registerAndEnter()">
+            Create Account
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </button>
         </div>
-        <button class="btn btn-primary btn-full" onclick="enterDashboard()">
-          Secure Login
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-        </button>
+
         <div class="form-hint">
-          <small>Demo: demo@amppulse.ai / Demo@12345</small>
           <small id="loginError" class="error-text"></small>
+          <small id="authToggle" style="display:block;text-align:center;margin-top:10px">Don't have an account? <a href="#" onclick="toggleAuthMode();return false;">Create one</a></small>
         </div>
       </div>
     </div>

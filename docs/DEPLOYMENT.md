@@ -96,6 +96,12 @@ The script: creates the backend venv, seeds `.env`, starts the backend,
 writes your Wi-Fi SSID/password into the sketch, uploads via arduino-cli
 (auto-installs it), then asks for the ESP32's IP and verifies `/data`.
 
+Server lifecycle is managed from the same menu: option **4** starts the
+backend + frontend (`--gui`), option **7** stops them again (`--stop`).
+Stop prefers the PIDs the script recorded (never touches unrelated
+processes) and falls back to identifying obviously-AmpPulse commands
+(`uvicorn`, python `http.server`) via port scan.
+
 ### 7.2 Manual flash
 Open `arduino/amppulse_esp32/amppulse_esp32.ino` in the Arduino IDE
 (Board: **ESP32 Dev Module**, 115200 baud), set:
@@ -107,11 +113,14 @@ Upload. The Serial Monitor prints the assigned IP, e.g. `IP Address: 192.168.1.8
 
 ### 7.3 Connect the dashboard
 1. Start the frontend: `cd frontend && python3 -m http.server 5500`
-2. Open `http://localhost:5500`, login (`demo@amppulse.ai` / `Demo@12345`)
-3. Open **📡 ESP32 Connect** in the sidebar, enter the ESP32's IP, press **Connect**
+2. Open `http://localhost:5500`, login (`demo@amppulse.ai` / `Demo@12345`) or register an account
+3. Open **📡 ESP32 Connect** in the sidebar, **Add &amp; Connect** the ESP32's IP
 4. Live cards update every 3s; relay toggles hit the device instantly
 
-The IP is saved per login (`PUT /api/v1/user/esp32`) and auto-reused next time.
+Multiple ESP32s can be saved per login (`GET/POST/PUT/DELETE
+/api/v1/user/esp32s` + `/api/v1/user/esp32`) and switched from the dashboard —
+the active one drives live data and relays. Saved devices auto-reconnect on
+login if reachable.
 Without an IP, the dashboard falls back to backend mode.
 
 > The sketch sends `Access-Control-Allow-Origin: *` on every response — this
