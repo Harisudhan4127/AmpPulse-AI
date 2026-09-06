@@ -2,27 +2,28 @@
 """
 AmpPulse AI - one-shot ESP32 + laptop connection script.
 
-Every step needed to get an ESP32 streaming data to this laptop's backend,
-with only the Wi-Fi SSID/password required from the user:
+The standalone sketch (arduino/amppulse_esp32/amppulse_esp32.ino) runs its OWN
+web server on port 80. The dashboard connects to it DIRECTLY by IP for live
+telemetry + relay control, and uses the FastAPI backend for login, analytics,
+history and bill prediction. This script gets everything up with the only
+input being the Wi-Fi SSID/password:
 
   1. Installs backend Python dependencies if missing.
-  2. Fixes backend/.env: generates a real DEVICE_PROVISION_KEY if needed.
+  2. Fixes backend/.env: generates a real JWT_SECRET if needed.
   3. Starts the FastAPI backend if it isn't already running.
-  4. Auto-generates a device_id and registers it -> gets device_key.
-  5. Picks the laptop's LAN IP automatically (override with --host-ip).
-  6. Writes the real SSID/password/host/id/key into arduino/.../amppulse_esp32.ino.
-  7. Uploads the sketch to the ESP32 via arduino-cli (auto-installs it if
+  4. Writes the real SSID/password into arduino/.../amppulse_esp32.ino.
+  5. Uploads the sketch to the ESP32 via arduino-cli (auto-installs it if
      missing and you allow it) or prints manual Arduino IDE steps.
-  8. Verifies end-to-end: waits for the first telemetry reading to arrive
-     at the backend.
+  6. Verifies end-to-end: probes the ESP32's own /data endpoint over the
+     local Wi-Fi and prints the live reading.
 
 Usage:
-    python3 setup_esp32.py                 # interactive menu (recommended)
-    python3 setup_esp32.py --gui           # start backend + frontend now
-    python3 setup_esp32.py --status        # show current state
-    python3 setup_esp32.py --ssid MyWifi --password hunter2   # one-shot full setup
+    python3 setup_esp32.py                           # interactive menu (recommended)
+    python3 setup_esp32.py --gui                     # start backend + frontend now
+    python3 setup_esp32.py --status                  # show current state
+    python3 setup_esp32.py --ssid MyWifi --password hunter2   # config + upload
     python3 setup_esp32.py --ssid MyWifi --password hunter2 --install-cli
-    python3 setup_esp32.py --port /dev/ttyUSB0 --skip-upload
+    python3 setup_esp32.py --esp32-ip 192.168.1.7 --skip-upload   # just verify /data
 
 Only Python 3 standard library is required.
 """
@@ -50,35 +51,28 @@ SKETCH_FILE = ROOT / "arduino" / "amppulse_esp32" / "amppulse_esp32.ino"
 BACKEND_LOG = BACKEND_DIR / "uvicorn.log"
 FRONTEND_LOG = ROOT / "frontend" / "server.log"
 
-PLACEHOLDERS = {
-    "WIFI_SSID": ("YOUR_WIFI_SSID",),
-    "WIFI_PASSWORD": ("YOUR_WIFI_PASSWORD",),
-    "BACKEND_HOST": ("192.168.1.100",),
-    "DEVICE_ID": ("ESP32_001",),
-    "DEVICE_KEY": ("PASTE_YOUR_DEVICE_KEY_HERE",),
+SKETCH_PLACEHOLDERS = {
+    "WIFI_SSID": ("HOME", "YOUR_WIFI_SSID", ""),
+    "WIFI_PASSWORD": ("Home@4127", "YOUR_WIFI_PASSWORD", ""),
 }
 
-PROVISION_PLACEHOLDERS = (
-    "", "change_this_provisioning_key", "insecure-dev-provision-key",
-    "PASTE_YOUR_DEVICE_KEY_HERE", "change_this_to_a_long_random_value",
-)
-
-DEFINES = {
-    "WIFI_SSID": r'#define\s+WIFI_SSID\s+"((?:[^"\\]|\\.)*)"',
-    "WIFI_PASSWORD": r'#define\s+WIFI_PASSWORD\s+"((?:[^"\\]|\\.)*)"',
-    "BACKEND_HOST": r'#define\s+BACKEND_HOST\s+"((?:[^"\\]|\\.)*)"',
-    "BACKEND_PORT": r'#define\s+BACKEND_PORT\s+(\d+)',
-    "DEVICE_ID": r'#define\s+DEVICE_ID\s+"((?:[^"\\]|\\.)*)"',
-    "DEVICE_KEY": r'#define\s+DEVICE_KEY\s+"((?:[^"\\]|\\.)*)"',
+# The standalone sketch stores Wi-Fi credentials as `const char* WIFI_SSID = "...";`
+SKETCH_DEFINES = {
+    "WIFI_SSID": r'const char\* WIFI_SSID\s*=\s*"((?:[^"\\]|\\.)*)"',
+    "WIFI_PASSWORD": r'const char\* WIFI_PASSWORD\s*=\s*"((?:[^"\\]|\\.)*)"',
 }
 
-
-def unescape_c(value: str) -> str:
-    return re.sub(r'\\(["\\])', r'\1', value)
+PLACEHOLDER_PREFIXES = frozenset([
+    "CHANGE_", "YOUR_", "PASTE", "DEMO", "Home@4127",
+])
 
 
 def log(msg: str) -> None:
     print(f"\n== {msg}")
+
+
+def unescape_c(value: str) -> str:
+    return re.sub(r'\\(["\\])', r'\1', value)
 
 
 def c_escape(value: str) -> str:
@@ -105,14 +99,14 @@ def write_env(env: dict) -> None:
         val = env[key]
         comment = ""
         if key == "HOST":
-            comment = " --- Server ---\n# Host the backend on all interfaces so the ESP32 can reach it.\n"
+            comment = " --- Server ---\n# Host the backend on all interfaces so the dashboard / devices can reach it.\n"
         elif key == "DATABASE_URL":
             comment = " --- Database (SQLite file for MVP; swap to Postgres URL for production) ---\n"
         elif key == "JWT_SECRET":
             comment = " --- Security ---\n# Secret used to sign user session (JWT) tokens.\n"
         elif key == "DEVICE_PROVISION_KEY":
-            comment = ("# Master key used ONLY to register brand-new devices. The script ships a "
-                       "generated value.\n")
+            comment = ("# Master key used ONLY to register brand-new devices for the backend "
+                       "telemetry path. The standalone sketch does NOT need it.\n")
         elif key == "CORS_ORIGINS":
             comment = " --- CORS (frontend origins allowed to call this API) ---\n"
         elif key == "SEED_USER_EMAIL":
@@ -165,6 +159,22 @@ def backend_python() -> str:
     return str(py)
 
 
+def ensure_env_secrets(env: dict) -> bool:
+    """Generate real credentials if the placeholders are still in place."""
+    changed = False
+    if env.get("JWT_SECRET", "").startswith("change_"):
+        env["JWT_SECRET"] = secrets.token_hex(32)
+        print("[env] Generated new JWT_SECRET")
+        changed = True
+    if env.get("DEVICE_PROVISION_KEY", "").startswith("change_"):
+        env["DEVICE_PROVISION_KEY"] = f"provision_{secrets.token_urlsafe(24)}"
+        print("[env] Generated DEVICE_PROVISION_KEY (backend telemetry path only)")
+        changed = True
+    if changed:
+        write_env(env)
+    return changed
+
+
 def start_backend(port: int) -> None:
     if api_is_up(port):
         print(f"[backend] Already running at 127.0.0.1:{port} - reusing it.")
@@ -188,14 +198,14 @@ def start_backend(port: int) -> None:
     sys.exit("Backend did not become healthy within 60s - see uvicorn.log.")
 
 
-# ---------------------------------------------------------------- .ino helpers
+# ---------------------------------------------------------------- sketch helpers
 
 def read_sketch_defines() -> dict:
     values = {}
     if not SKETCH_FILE.exists():
         return values
     text = SKETCH_FILE.read_text()
-    for name, pattern in DEFINES.items():
+    for name, pattern in SKETCH_DEFINES.items():
         m = re.search(pattern, text)
         if m:
             values[name] = unescape_c(m.group(1))
@@ -206,15 +216,12 @@ def patch_sketch(values: dict) -> None:
     text = SKETCH_FILE.read_text()
     count = 0
     for name, new_value in values.items():
-        pattern = DEFINES[name]
-        if new_value.lstrip("-").isdigit():
-            replace = f'#define {name}  {new_value}'
-        else:
-            replace = f'#define {name}  "{c_escape(new_value)}"'
+        pattern = SKETCH_DEFINES[name]
+        replace = f'const char* {name} = "{c_escape(new_value)}";'
         text, n = re.subn(pattern, lambda _m: replace, text, count=1)
         count += n
         if n != 1:
-            sys.exit(f"Could not find {name} define in {SKETCH_FILE}")
+            sys.exit(f"Could not find {name} in {SKETCH_FILE}")
     SKETCH_FILE.write_text(text)
     print(f"[sketch] Configured {len(values)} values in {SKETCH_FILE}")
 
@@ -238,94 +245,6 @@ def find_serial_port() -> str:
         if hits:
             return str(hits[0])
     return ""
-
-
-# ---------------------------------------------------------------- provisioning
-
-def ensure_provision_key(env: dict) -> tuple[str, bool]:
-    key = env.get("DEVICE_PROVISION_KEY", "")
-    changed = key in PROVISION_PLACEHOLDERS
-    if changed:
-        key = f"provision_{secrets.token_urlsafe(24)}"
-        env["DEVICE_PROVISION_KEY"] = key
-        print(f"[env] Generated new DEVICE_PROVISION_KEY: {key}")
-    if env.get("JWT_SECRET", "") in PROVISION_PLACEHOLDERS:
-        env["JWT_SECRET"] = secrets.token_hex(32)
-        print("[env] Generated new JWT_SECRET")
-        changed = True
-    if changed:
-        write_env(env)
-    return key, changed
-
-
-def register_device(port: int, provision_key: str, device_id: str,
-                    name: str) -> str:
-    log(f"Registering device {device_id} with the backend")
-    try:
-        _, resp = http_json(
-            "POST", f"http://127.0.0.1:{port}/api/v1/devices/register",
-            data={"device_id": device_id, "name": name,
-                  "firmware_version": "amppulse_esp32_1.0"},
-            headers={"X-Provision-Key": provision_key},
-        )
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"registration failed ({e.code}): {e.read().decode()}")
-    device_key = resp.get("device_key")
-    if not device_key:
-        raise RuntimeError(f"unexpected register response: {resp}")
-    print(f"[device] id={device_id} key={device_key}")
-    return device_key
-
-
-def find_pid_listening(port: int) -> int | None:
-    port_hex = f"{port:04X}"
-    inodes = set()
-    try:
-        with open("/proc/net/tcp") as fh:
-            fh.readline()
-            for line in fh:
-                parts = line.split()
-                if (len(parts) > 9 and parts[1].endswith(":" + port_hex)
-                        and parts[3] == "0A"):
-                    inodes.add(parts[9])
-    except OSError:
-        return None
-    if not inodes:
-        return None
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        fd_dir = f"/proc/{entry}/fd"
-        try:
-            fds = os.listdir(fd_dir)
-        except OSError:
-            continue
-        for fd in fds:
-            try:
-                target = os.readlink(f"{fd_dir}/{fd}")
-            except OSError:
-                continue
-            if target.startswith("socket:[") and target[8:-1] in inodes:
-                return int(entry)
-    return None
-
-
-def restart_backend(port: int) -> None:
-    pid = find_pid_listening(port)
-    if pid:
-        print(f"[backend] Stopping stale backend (pid {pid}) so the new "
-              f"provisioning key takes effect.")
-        import signal
-        os.kill(pid, signal.SIGTERM)
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            if find_pid_listening(port) is None:
-                break
-            time.sleep(0.3)
-    if api_is_up(port):
-        # Process exiting; give it a moment to release the port.
-        time.sleep(2)
-    start_backend(port)
 
 
 # ---------------------------------------------------------------- upload
@@ -395,42 +314,71 @@ def upload_sketch(cli: str, port: str) -> bool:
     return True
 
 
-# ---------------------------------------------------------------- verification
+def do_upload(port_arg=None, install_arg=False) -> bool:
+    port = port_arg or find_serial_port()
+    if not port:
+        print("  Serial port detected: none. Plug in the ESP32 via USB and retry.")
+        return False
+    if have_arduino_cli():
+        return upload_sketch(shutil.which("arduino-cli"), port)
+    if install_arg:
+        cli = install_arduino_cli()
+        return upload_sketch(cli, port)
+    print("\nNo arduino-cli or PlatformIO found on this machine.")
+    choice = input("Auto-install arduino-cli and upload now? "
+                   "(y/N, first run downloads ~1GB of ESP32 toolchains): ").strip().lower()
+    if choice in ("y", "yes"):
+        cli = install_arduino_cli()
+        return upload_sketch(cli, port)
+    print("Manual: open the sketch in Arduino IDE (Board: ESP32 Dev Module) "
+          "and press Upload.")
+    print(f"  Serial port detected: {port}")
+    return False
 
-def verify_telemetry(port: int, device_id: str, wait_s: int = 90) -> None:
-    env = read_env()
-    email = env.get("SEED_USER_EMAIL", "demo@amppulse.ai")
-    password = env.get("SEED_USER_PASSWORD", "Demo@12345")
-    try:
-        _, auth = http_json("POST", f"http://127.0.0.1:{port}/api/v1/auth/login",
-                            data={"email": email, "password": password})
-    except urllib.error.HTTPError as e:
-        print(f"  [verify] login failed ({e.code}) - skipping verification\n{e.read().decode()}")
-        return
-    token = auth.get("access_token")
-    if not token:
-        print("  [verify] no token returned - skipping verification")
-        return
-    url = f"http://127.0.0.1:{port}/api/v1/devices/{device_id}/status"
-    headers = {"Authorization": f"Bearer {token}"}
-    print(f"[verify] Waiting up to {wait_s}s for first telemetry from {device_id}...")
+
+# ---------------------------------------------------------------- ESP32 verify
+
+def probe_esp32(ip: str, port: int = 80, timeout: int = 4) -> dict:
+    """GET http://<ip>:<port>/data on the ESP32's own web server."""
+    url = f"http://{ip}:{port}/data"
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        body = resp.read().decode().strip()
+    return json.loads(body) if body else {}
+
+
+def verify_esp32(ip: str, wait_s: int = 30) -> None:
+    """Wait until the ESP32's /data endpoint answers, then print its reading."""
+    print(f"[verify] Probing ESP32 web server at http://{ip}:80/data ...")
     deadline = time.time() + wait_s
     while time.time() < deadline:
         try:
-            _, status = http_json("GET", url, headers=headers)
-            latest = status.get("latest_reading")
-            if latest and latest.get("created_at"):
-                print(f"  [verify] FIRST READING received at {latest['created_at']}: "
-                      f"V={latest['voltage']}V I={latest['current']}A "
-                      f"P={latest['power']}W T={latest['temperature']}C")
-                print("[verify] SUCCESS - ESP32 and laptop are fully connected.")
+            data = probe_esp32(ip)
+            if "voltage" in data:
+                print(f"  [verify] Live reading: V={data.get('voltage')} V  "
+                      f"I={data.get('current')} A  P={data.get('power')} W  "
+                      f"T={data.get('temperature')} C  "
+                      f"relay1={data.get('relay1')} relay2={data.get('relay2')}")
+                print("[verify] SUCCESS - ESP32 web server is reachable and serving data.")
                 return
         except Exception:
             pass
-        time.sleep(3)
-    print(f"[verify] No telemetry within {wait_s}s. Check: same Wi-Fi network, "
-          f"BACKEND_HOST={read_sketch_defines().get('BACKEND_HOST')} reachable "
-          f"from the ESP32, and serial monitor for [WiFi]/[Telemetry] logs.")
+        time.sleep(2)
+    print(f"[verify] No response from {ip} within {wait_s}s.")
+    print("  Check: same Wi-Fi network, ESP32 powered, and read its IP from the")
+    print("  Serial Monitor (115200 baud) - then retry or use the dashboard's")
+    print("  \"ESP32 Connect\" bar to enter it.")
+
+
+def prompt_esp32_ip(existing: dict, arg=None) -> str:
+    ip = arg or ""
+    if not ip:
+        hint = ""
+        if "WIFI_SSID" in existing:
+            hint = " (tip: read the IP from the Serial Monitor, 115200 baud)"
+        ip = input(f"ESP32 IP address{hint}: ").strip()
+    if not ip:
+        sys.exit("An ESP32 IP address is required to verify the connection.")
+    return ip
 
 
 # ---------------------------------------------------------------- frontend/GUI
@@ -482,19 +430,6 @@ def open_browser(url: str) -> None:
     print(f"Open this URL in your browser: {url}")
 
 
-def run_gui(open_win: bool = True) -> None:
-    """Bring everything up: backend + frontend, then open the browser."""
-    port = backend_port()
-    start_backend(port)
-    url = start_frontend_server()
-    if open_win:
-        open_browser(url)
-    print(f"\nFontend : {url}   (login: demo@amppulse.ai / Demo@12345)")
-    print(f"API docs: http://localhost:{port}/docs")
-
-
-# ---------------------------------------------------------------- reusable steps
-
 def backend_port() -> int:
     try:
         return int(read_env().get("PORT", "8000"))
@@ -502,158 +437,72 @@ def backend_port() -> int:
         return 8000
 
 
+def run_gui(open_win: bool = True) -> None:
+    """Bring everything up: backend + frontend, then open the browser."""
+    port = backend_port()
+    start_backend(port)
+    url = start_frontend_server()
+    if open_win:
+        open_browser(url)
+    print(f"\nFrontend: {url}   (login: demo@amppulse.ai / Demo@12345)")
+    print(f"API docs: http://localhost:{port}/docs")
+    print("Then enter your ESP32's IP in the dashboard's \"ESP32 Connect\" bar.")
+
+
+# ---------------------------------------------------------------- reusable steps
+
 def prompt_wifi(existing: dict, ssid_arg=None, password_arg=None) -> tuple[str, str]:
     ssid = ssid_arg or existing.get("WIFI_SSID", "")
-    if not ssid or ssid in PLACEHOLDERS["WIFI_SSID"]:
+    if not ssid or ssid in SKETCH_PLACEHOLDERS["WIFI_SSID"]:
         ssid = input("Wi-Fi SSID: ").strip()
     password = password_arg or existing.get("WIFI_PASSWORD", "")
-    if not password or password in PLACEHOLDERS["WIFI_PASSWORD"]:
+    if not password or password in SKETCH_PLACEHOLDERS["WIFI_PASSWORD"]:
         password = input("Wi-Fi password: ").strip()
     if not ssid or not password:
         sys.exit("Wi-Fi SSID and password are required.")
     return ssid, password
 
 
-def resolve_host_ip(existing: dict, host_arg=None) -> str:
-    host_ip = host_arg or existing.get("BACKEND_HOST", "")
-    if not host_ip or host_ip in PLACEHOLDERS["BACKEND_HOST"]:
-        host_ip = detect_lan_ip()
-    if not host_ip:
-        host_ip = input("Laptop LAN IP (from `ip addr`/`ipconfig`): ").strip()
-    if not host_ip:
-        sys.exit("Could not determine the laptop's LAN IP.")
-    return host_ip
-
-
-def register_and_configure(ssid_arg=None, password_arg=None, host_arg=None,
-                           device_id_arg=None, name="Home Energy Monitor"):
-    """Ensure backend is up, ask for Wi-Fi, register a device, and write the
-    sketch config. Returns (backend_port, device_id, sketch_values)."""
+def configure_sketch(ssid_arg=None, password_arg=None) -> dict:
+    """Write the real Wi-Fi credentials into the standalone sketch."""
     if not SKETCH_FILE.exists():
         sys.exit(f"Sketch not found: {SKETCH_FILE}")
 
-    env = read_env()
-    port = backend_port()
-    provision_key, _key_changed = ensure_provision_key(env)
-
-    if _key_changed:
-        # A new provisioning key was written; a backend running with the old
-        # key would reject registration. Restart if one is already up.
-        if api_is_up(port):
-            print("[backend] Provisioning key changed - restarting backend.")
-            restart_backend(port)
-        else:
-            start_backend(port)
-    else:
-        start_backend(port)
-
     existing = read_sketch_defines()
-
     ssid, password = prompt_wifi(existing, ssid_arg, password_arg)
-    host_ip = resolve_host_ip(existing, host_arg)
-    print(f"[net] Laptop will advertise BACKEND_HOST={host_ip}:{port}")
 
-    device_id = (device_id_arg or existing.get("DEVICE_ID", "")).strip()
-    device_key = (existing.get("DEVICE_KEY", "") or "").strip()
-    if (device_id and device_id not in PLACEHOLDERS["DEVICE_ID"]
-            and device_key and not any(p in device_key for p in ("PASTE",))):
-        print(f"[device] Reusing configured device_id={device_id} and its key.")
-    else:
-        if not device_id or device_id in PLACEHOLDERS["DEVICE_ID"]:
-            device_id = f"ESP32_{secrets.token_hex(3).upper()}"
-        try:
-            device_key = register_device(port, provision_key, device_id, name)
-        except RuntimeError as e:
-            if "401" not in str(e) or not api_is_up(port):
-                sys.exit(str(e))
-            print(f"[device] {e}; a stale backend may hold the old provisioning "
-                  f"key - restarting it and retrying.")
-            restart_backend(port)
-            device_key = register_device(port, provision_key, device_id, name)
-
-    values = {
-        "WIFI_SSID": ssid,
-        "WIFI_PASSWORD": password,
-        "BACKEND_HOST": host_ip,
-        "BACKEND_PORT": str(port),
-        "DEVICE_ID": device_id,
-        "DEVICE_KEY": device_key,
-    }
+    values = {"WIFI_SSID": ssid, "WIFI_PASSWORD": password}
     log("Writing configuration into the sketch")
     patch_sketch(values)
 
     print("\n== Summary")
-    print(f"  Wi-Fi        : {ssid}")
-    print(f"  Backend      : http://{host_ip}:{port}")
-    print(f"  Device ID    : {device_id}")
-    print(f"  Device Key   : {device_key}")
-    print(f"  Sketch       : {SKETCH_FILE}")
-    print("  Wiring (GPIO): relay ch1=26 ch2=27, ZMPT101B=34, DHT22=4")
-    print("  Serial       : 115200 baud")
-    return port, device_id, values
-
-
-def do_upload(port_arg=None, install_arg=False) -> bool:
-    port = port_arg or find_serial_port()
-    if not port:
-        print("  Serial port detected: none. Plug in the ESP32 via USB and retry.")
-        return False
-    if have_arduino_cli():
-        return upload_sketch(shutil.which("arduino-cli"), port)
-    if install_arg:
-        cli = install_arduino_cli()
-        return upload_sketch(cli, port)
-    print("\nNo arduino-cli or PlatformIO found on this machine.")
-    choice = input("Auto-install arduino-cli and upload now? "
-                   "(y/N, first run downloads ~1GB of ESP32 toolchains): ").strip().lower()
-    if choice in ("y", "yes"):
-        cli = install_arduino_cli()
-        return upload_sketch(cli, port)
-    print("Manual: open the sketch in Arduino IDE (Board: ESP32 Dev Module) "
-          "and press Upload.")
-    print(f"  Serial port detected: {port}")
-    return False
+    print(f"  Wi-Fi   : {ssid}")
+    print(f"  Sketch  : {SKETCH_FILE}")
+    print("  Wiring (GPIO): relay ch1=25 ch2=26 (active-LOW), ZMPT101B=34, DHT22=4")
+    print("  Serial  : 115200 baud (read the assigned IP from the Serial Monitor)")
+    return values
 
 
 def show_status() -> None:
     port = backend_port()
     sketch = read_sketch_defines() or {}
     up = api_is_up(port)
+    lan = detect_lan_ip()
     print("\n== Current status")
-    print(f"  Backend        : {'running at http://127.0.0.1:'+str(port) if up else 'NOT running'}")
-    print(f"  Serial port    : {find_serial_port() or 'none detected'}")
-    print(f"  Sketch         : {SKETCH_FILE.name or 'missing'}")
-    for k in ("WIFI_SSID", "BACKEND_HOST", "BACKEND_PORT", "DEVICE_ID"):
+    print(f"  Backend     : {'running at http://127.0.0.1:' + str(port) if up else 'NOT running'}")
+    print(f"  Frontend    : http://localhost:5500 (start with menu 4)")
+    if lan:
+        print(f"  Laptop LAN IP: {lan}")
+    print(f"  Serial port : {find_serial_port() or 'none detected'}")
+    print(f"  Sketch      : {SKETCH_FILE}")
+    for k in ("WIFI_SSID", "WIFI_PASSWORD"):
         v = sketch.get(k)
-        if v and v not in PLACEHOLDERS.get(k, ()):
-            print(f"    {k:<13}: {v}")
-    print(f"    DEVICE_KEY  : {'configured' if sketch.get('DEVICE_KEY') and 'PASTE' not in sketch['DEVICE_KEY'] else 'MISSING'}")
-
-    did = sketch.get("DEVICE_ID")
-    key = sketch.get("DEVICE_KEY")
-    if did and key and "PASTE" not in key and up:
-        try:
-            env = read_env()
-            _, auth = http_json(
-                "POST", f"http://127.0.0.1:{port}/api/v1/auth/login",
-                data={"email": env.get("SEED_USER_EMAIL", "demo@amppulse.ai"),
-                      "password": env.get("SEED_USER_PASSWORD", "Demo@12345")})
-            tok = auth["access_token"]
-            _, status = http_json(
-                "GET", f"http://127.0.0.1:{port}/api/v1/devices/{did}/status",
-                headers={"Authorization": f"Bearer {tok}"})
-            print(f"  Device {did}    : {status.get('status')} "
-                  f"(IP {status.get('ip_address') or 'not reported yet'}, "
-                  f"last seen {status.get('last_seen_at') or 'never'})")
-        except Exception as e:
-            print(f"  Device {did}    : could not query status ({e})")
-    elif did:
-        if up:
-            print(f"  Device {did}    : registered but never reported data yet - "
-                  f"flash the firmware and watch the Monitor tab for its IP.")
-        else:
-            print(f"  Device {did}    : backend is down - start it (menu 4) to "
-                  f"check registration.")
+        if v and v not in SKETCH_PLACEHOLDERS.get(k, ()):
+            masked = v if k == "WIFI_SSID" else "*****"
+            print(f"    {k:<12}: {masked}")
+    if not sketch.get("WIFI_SSID") or sketch["WIFI_SSID"] in SKETCH_PLACEHOLDERS["WIFI_SSID"]:
+        print("    WIFI_SSID  : (not configured yet - menu 2)")
+    print("  ESP32 web   : connect from the dashboard via its IP (read from Serial)")
 
 
 # ---------------------------------------------------------------- interactive menu
@@ -662,12 +511,12 @@ def menu() -> int:
     print("""
   ⚡ AmpPulse AI — ESP32 + laptop setup
   ─────────────────────────────────────────────
-  1) FULL AUTO   : register device (generates ID+key) → configure sketch → upload to ESP32
-  2) Register device & configure sketch (asks Wi-Fi name/password)
+  1) FULL AUTO : configure Wi-Fi in sketch → upload → verify direct connection
+  2) Configure Wi-Fi credentials in the sketch
   3) Upload code to ESP32 (uses current sketch config)
-  4) Run GUI : start backend + frontend and open the browser
-  5) Configure Wi-Fi credentials in the sketch only
-  6) Show current status (backend, device, serial port)
+  4) Run GUI   : start backend + frontend and open the browser
+  5) Verify ESP32 web server (/data) by IP
+  6) Show current status (backend, serial port, sketch Wi-Fi)
   7) Install arduino-cli toolchain (needed for auto-upload)
   8) Quit
   ─────────────────────────────────────────────
@@ -681,11 +530,12 @@ def menu() -> int:
         choice = raw.strip() or "4"
         try:
             if choice == "1":
-                port, device_id, _ = register_and_configure()
-                if do_upload(install_arg=False):
-                    verify_telemetry(port, device_id)
+                configure_sketch()
+                if do_upload():
+                    ip = prompt_esp32_ip(read_sketch_defines())
+                    verify_esp32(ip)
             elif choice == "2":
-                register_and_configure()
+                configure_sketch()
             elif choice == "3":
                 if not SKETCH_FILE.exists():
                     sys.exit(f"Sketch not found: {SKETCH_FILE}")
@@ -693,10 +543,8 @@ def menu() -> int:
             elif choice == "4":
                 run_gui()
             elif choice == "5":
-                existing = read_sketch_defines()
-                ssid, password = prompt_wifi(existing)
-                patch_sketch({"WIFI_SSID": ssid, "WIFI_PASSWORD": password})
-                print("Wi-Fi credentials written to the sketch.")
+                ip = prompt_esp32_ip(read_sketch_defines())
+                verify_esp32(ip)
             elif choice == "6":
                 show_status()
             elif choice == "7":
@@ -727,22 +575,19 @@ def main() -> int:
     ap.add_argument("--menu", action="store_true",
                     help="Force the interactive menu")
     ap.add_argument("--status", action="store_true",
-                    help="Show current backend/device/serial status")
+                    help="Show current backend/frontend/serial status")
     ap.add_argument("--gui", action="store_true",
                     help="Start backend + frontend and open the browser")
     ap.add_argument("--ssid", help="Wi-Fi SSID (prompted if not given)")
     ap.add_argument("--password", help="Wi-Fi password (prompted if not given)")
-    ap.add_argument("--host-ip", help="Laptop LAN IP the ESP32 will talk to "
-                                      "(auto-detected if not given)")
-    ap.add_argument("--device-id", help="Override auto-generated device_id")
-    ap.add_argument("--name", default="Home Energy Monitor", help="Device name")
+    ap.add_argument("--esp32-ip", help="ESP32 IP to verify /data against")
     ap.add_argument("--port", help="ESP32 serial port (auto-detected)")
     ap.add_argument("--skip-upload", action="store_true",
-                    help="Configure everything but don't upload")
+                    help="Configure Wi-Fi in the sketch but don't upload")
     ap.add_argument("--install-cli", action="store_true",
                     help="Auto-install arduino-cli and upload without prompting")
     ap.add_argument("--no-verify", action="store_true",
-                    help="Skip end-to-end telemetry verification")
+                    help="Skip the /data verification after upload")
     args = ap.parse_args()
 
     if args.menu or len(sys.argv) == 1:
@@ -756,11 +601,11 @@ def main() -> int:
         run_gui()
         return 0
 
-    port, device_id, _values = register_and_configure(
-        ssid_arg=args.ssid, password_arg=args.password,
-        host_arg=args.host_ip, device_id_arg=args.device_id, name=args.name)
+    # Ensure the backend .env is ready (GUI relies on it) even for one-shot runs.
+    ensure_env_secrets(read_env())
 
-    # ----- Upload -----
+    configure_sketch(ssid_arg=args.ssid, password_arg=args.password)
+
     uploaded = False
     if args.skip_upload:
         print("\nSkipped upload. Open the sketch in Arduino IDE and press Upload.")
@@ -768,10 +613,10 @@ def main() -> int:
         uploaded = do_upload(args.port, install_arg=args.install_cli)
 
     if uploaded and not args.no_verify:
-        verify_telemetry(port, device_id)
+        verify_esp32(prompt_esp32_ip(read_sketch_defines(), args.esp32_ip))
 
-    print("\nAll done. Dashboard: http://localhost:5500 "
-          "(backend also at http://localhost:%d/docs)" % port)
+    print("\nNext: open http://localhost:5500, log in (demo@amppulse.ai / Demo@12345),")
+    print("and enter the ESP32's IP in the \"ESP32 Connect\" bar to start the live dashboard.")
     return 0
 
 

@@ -42,6 +42,11 @@ def ensure_schema_compatible() -> None:
         if "last_ip" not in cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE devices ADD COLUMN last_ip VARCHAR(45)"))
+    if "users" in inspector.get_table_names():
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        if "esp32_ip" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN esp32_ip VARCHAR(45)"))
 
 
 def get_db():

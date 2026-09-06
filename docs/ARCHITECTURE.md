@@ -63,6 +63,29 @@ any simple HTTP server (or opened as a file — CORS is configured either
 way). No message brokers, no microservices, no container orchestration —
 intentionally, per the "don't over-engineer the MVP" constraint.
 
+## 4.5 Direct ESP32 connection mode
+
+The dashboard can talk to the ESP32's **own web server** (port 80) directly,
+bypassing the backend for live telemetry and relay control. The user enters
+the ESP32's IP (shown in the Serial Monitor) in the dashboard's "ESP32 Connect"
+bar; the IP is saved per login via `PUT /api/v1/user/esp32` and probed for
+reachability + latency.
+
+```
+            fetch http://<esp32-ip>:80/data  (live voltage/current/power/temp/humidity/relays)
+Frontend ───────────────────────────────────▶ ESP32 WebServer
+            fetch http://<esp32-ip>:80/relay1|2/on|off  (instant relay control)
+```
+
+- **CORS**: the browser blocks reading cross-origin responses unless the
+  ESP32 sends `Access-Control-Allow-Origin: *`. The standalone sketch
+  (`amppulse_esp32.ino`) sets this header on every response and handles the
+  `OPTIONS` preflight via `sendResponse()` / `handleNotFound()`.
+- **Fallback**: with no IP (or after Disconnect/3s timeout), live data and
+  relay control return to the normal backend path. Analytics (Bill
+  Prediction, Monthly Reports, Energy Usage) always use the backend, which
+  still needs telemetry POSTed to it (device-key auth).
+
 ## 5. Production architecture (future)
 
 **Stage 1 — Development (current)**

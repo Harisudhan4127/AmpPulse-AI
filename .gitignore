@@ -15,3 +15,8 @@ esp32-firmware/.pio/
 .vscode/
 .venv
 __pycache__
+
+# Logs
+backend/uvicorn.log
+frontend/server.log
+*.log

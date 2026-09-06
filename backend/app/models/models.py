@@ -47,6 +47,7 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(32), default="home", nullable=False)  # home/organization/industrial/government
+    esp32_ip = Column(String(45), nullable=True)  # user-entered ESP32 address for direct connection
     created_at = Column(DateTime, default=utcnow)
 
     devices = relationship("Device", back_populates="owner", cascade="all, delete-orphan")

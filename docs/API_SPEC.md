@@ -77,6 +77,28 @@ List devices belonging to the current user (frontend).
 ```
 - **404** `DEVICE_NOT_FOUND`
 
+## `GET /api/v1/user/esp32`
+Return the ESP32 address the current user saved for direct connection, with a live TCP reachability probe.
+- Auth: user JWT
+- **200**
+```json
+{"success": true, "ip": "192.168.1.7", "port": 80,
+ "connected": true, "latency_ms": 3.4, "error": null}
+```
+  - `ip` is `null` if not configured. `connected` is `true`/`false` based on probing the saved address.
+
+## `PUT /api/v1/user/esp32`
+Save (and remember per-login) the direct ESP32 IP used by the frontend to hit the device's own web server (port 80). Returns probe result.
+- Auth: user JWT
+- Body: `{"ip": "192.168.1.7", "port": 80}`
+- **200** `{"success": true, "ip": "...", "port": 80, "connected": bool, "latency_ms": ..., "error": null | "..."}`
+- **422** `VALIDATION_ERROR` — empty IP
+
+## `DELETE /api/v1/user/esp32`
+Forget the saved ESP32 address (returns to backend-only mode).
+- Auth: user JWT
+- **200** `{"success": true, "ip": null, "port": 80, "connected": false, "latency_ms": null, "error": null}`
+
 ## `PATCH /api/v1/devices/{device_id}/channels`
 Rename appliance channels.
 - Auth: user JWT

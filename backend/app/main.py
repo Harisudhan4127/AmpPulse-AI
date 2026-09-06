@@ -21,7 +21,7 @@ from app.core.database import (
 from app.core.errors import ApiError, api_error_handler, validation_error_handler, unhandled_error_handler
 from app.core.security import hash_password
 from app.models.models import User
-from app.routers import auth, devices, telemetry, commands, health
+from app.routers import auth, devices, telemetry, commands, health, user_settings
 
 settings = get_settings()
 
@@ -74,6 +74,7 @@ app.include_router(auth.router)
 app.include_router(devices.router)
 app.include_router(telemetry.router)
 app.include_router(commands.router)
+app.include_router(user_settings.router)
 
 
 @app.get("/")
