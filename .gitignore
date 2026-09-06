@@ -13,3 +13,5 @@ esp32-firmware/.pio/
 # OS/editor
 .DS_Store
 .vscode/
+.venv
+__pycache__
