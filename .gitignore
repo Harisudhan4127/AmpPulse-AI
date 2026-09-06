@@ -1,0 +1,15 @@
+# Backend
+backend/.env
+backend/amppulse.db
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+
+# ESP32 firmware
+esp32-firmware/include/config.h
+esp32-firmware/.pio/
+
+# OS/editor
+.DS_Store
+.vscode/

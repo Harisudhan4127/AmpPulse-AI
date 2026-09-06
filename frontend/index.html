@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AmpPulse AI — Smart Energy Intelligence</title>
+    <meta
+      name="description"
+      content="AmpPulse AI — Measure Every Ampere. Save Every Rupee."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script>
+      // Backend base URL - change this if your backend runs on a different
+      // host/port. Kept as a single global so it's the one place to edit
+      // when moving from local dev to a deployed backend later.
+      window.AMPPULSE_API_BASE = window.AMPPULSE_API_BASE
+        || `http://${window.location.hostname || "localhost"}:8000`;
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <a class="brand" href="#home" onclick="showLanding()"
+          ><span class="brand-mark">ϟ</span><span>AmpPulse <b>AI</b></span></a
+        >
+        <nav class="nav-links">
+          <a href="#how">How it works</a><a href="#features">Features</a
+          ><a href="#solutions">Solutions</a><a href="#reports">Reports</a>
+        </nav>
+        <div class="top-actions">
+          <button class="btn ghost" onclick="openLogin()">Login</button
+          ><button class="btn primary" onclick="openLogin()">
+            Get Started
+          </button>
+        </div>
+        <button class="mobile-menu" onclick="toggleMenu()">☰</button>
+      </header>
+
+      <main id="landing">
+        <section class="hero">
+          <div class="hero-copy">
+            <div class="eyebrow">
+              <span class="pulse"></span> AI + IoT SMART ENERGY PLATFORM
+            </div>
+            <h1>Measure Every<br /><span>Ampere.</span> Save Every Rupee.</h1>
+            <p>
+              See where electricity is going in real time. Monitor every
+              appliance, understand the cost, predict your EB bill and discover
+              smarter ways to save.
+            </p>
+            <div class="hero-actions">
+              <button class="btn primary xl" onclick="openLogin()">
+                Start Monitoring →</button
+              ><button class="btn glass xl" onclick="scrollToId('how')">
+                See How It Works
+              </button>
+            </div>
+            <div class="mini-stats">
+              <div><b>Live</b><span>Current monitoring</span></div>
+              <div><b>AI</b><span>Bill prediction</span></div>
+              <div><b>24/7</b><span>Energy insights</span></div>
+            </div>
+          </div>
+          <div class="hero-visual">
+            <div class="glow"></div>
+            <div class="dashboard-preview">
+              <div class="preview-head">
+                <span>Home Energy</span><span class="live-dot">● LIVE</span>
+              </div>
+              <div class="preview-kpis">
+                <div>
+                  <small>Live Power</small><strong>2.84 <i>kW</i></strong
+                  ><em>+4.2%</em>
+                </div>
+                <div>
+                  <small>Today</small><strong>8.42 <i>kWh</i></strong
+                  ><em class="good">−8.4%</em>
+                </div>
+                <div>
+                  <small>EB Estimate</small><strong>₹62.40</strong
+                  ><em>today</em>
+                </div>
+              </div>
+              <div class="chart-box">
+                <div class="chart-title">
+                  Energy consumption <span>Today</span>
+                </div>
+                <svg viewBox="0 0 560 160" preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="fill" x1="0" x2="0" y1="0" y2="1">
+                      <stop
+                        offset="0"
+                        stop-color="#37d38a"
+                        stop-opacity=".35"
+                      />
+                      <stop offset="1" stop-color="#37d38a" stop-opacity="0" />
+                    </linearGradient>
+                  </defs>
+                  <path
+                    d="M0 130 C45 118 55 80 92 95 S135 130 165 102 S205 42 238 68 S275 110 305 80 S345 30 382 62 S420 125 455 88 S510 50 560 20 V160 H0Z"
+                    fill="url(#fill)"
+                  />
+                  <path
+                    d="M0 130 C45 118 55 80 92 95 S135 130 165 102 S205 42 238 68 S275 110 305 80 S345 30 382 62 S420 125 455 88 S510 50 560 20"
+                    fill="none"
+                    stroke="#37d38a"
+                    stroke-width="4"
+                  />
+                </svg>
+              </div>
+              <div class="preview-devices">
+                <div>
+                  <span class="device-icon ac">❄</span><b>AC</b
+                  ><small>1.49 kW · 6.8 A</small><span class="on">ON</span>
+                </div>
+                <div>
+                  <span class="device-icon">◉</span><b>Refrigerator</b
+                  ><small>0.25 kW · 1.1 A</small><span class="on">ON</span>
+                </div>
+                <div>
+                  <span class="device-icon">⌁</span><b>Fan</b
+                  ><small>0.08 kW · 0.35 A</small><span class="off">OFF</span>
+                </div>
+              </div>
+            </div>
+            <div class="float-card bill">
+              <span>Predicted month-end</span><b>₹1,860</b
+              ><small>AI forecast</small>
+            </div>
+            <div class="float-card voltage">
+              <span>Voltage</span><b>230 V</b><small>50.01 Hz</small>
+            </div>
+          </div>
+        </section>
+
+        <section class="problem section" id="features">
+          <div class="section-label">THE PROBLEM</div>
+          <h2>Where is your electricity going?</h2>
+          <p class="lead">
+            A monthly bill tells you the total. AmpPulse AI shows you the story
+            behind it.
+          </p>
+          <div class="compare">
+            <div class="compare-card old">
+              <div class="compare-title">Traditional bill</div>
+              <div class="compare-row">Total units <b>✓</b></div>
+              <div class="compare-row muted">Appliance usage <b>—</b></div>
+              <div class="compare-row muted">Live power <b>—</b></div>
+              <div class="compare-row muted">Bill prediction <b>—</b></div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="compare-card new">
+              <div class="compare-title">AmpPulse AI</div>
+              <div class="compare-row">Live current & voltage <b>✓</b></div>
+              <div class="compare-row">Appliance-level usage <b>✓</b></div>
+              <div class="compare-row">Estimated EB bill <b>✓</b></div>
+              <div class="compare-row">AI savings insights <b>✓</b></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="how section" id="how">
+          <div class="section-label">HOW IT WORKS</div>
+          <h2>From one ampere to one smart decision.</h2>
+          <div class="steps">
+            <div>
+              <span>01</span><b>Electrical Supply</b
+              ><small>Safe measurement point</small>
+            </div>
+            <i>→</i>
+            <div>
+              <span>02</span><b>Current / Energy Sensor</b
+              ><small>Captures electrical data</small>
+            </div>
+            <i>→</i>
+            <div>
+              <span>03</span><b>IoT Controller</b
+              ><small>Processes & transmits</small>
+            </div>
+            <i>→</i>
+            <div>
+              <span>04</span><b>Cloud + AI</b><small>Analyzes patterns</small>
+            </div>
+            <i>→</i>
+            <div>
+              <span>05</span><b>Dashboard</b
+              ><small>Understand, predict, save</small>
+            </div>
+          </div>
+        </section>
+
+        <section class="features section" id="solutions">
+<div class="section-label">SOLUTION</div>
+            <h2>Specially built for your home</h2>
+            <p>AmpPulse AI measures each appliance, controls it remotely, predicts your bill and shows where you can save.</p>
+            <div class="solution">
+              <span>⌂</span>
+              <h3>Home</h3>
+              <p>Monitor Fan, TV, Refrigerator, AC, Microwave and any appliance you add. Turn each one ON/OFF wirelessly from the dashboard.</p>
+              <button onclick="openLogin()">Home dashboard →</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="cta section" id="reports">
+          <div>
+            <div class="section-label">MONTHLY REPORTS</div>
+            <h2>Know the bill before the bill arrives.</h2>
+            <p>
+              Daily energy, monthly cost, highest-consuming appliance, peak
+              usage time and AI saving opportunities — in one report.
+            </p>
+          </div>
+          <button class="btn primary xl" onclick="openLogin()">
+            Explore Dashboard →
+          </button>
+        </section>
+      </main>
+
+      <div id="loginModal" class="modal hidden">
+        <div class="modal-card login-card">
+          <button class="close" onclick="closeModal()">×</button>
+          <div class="section-label">AMPULSE AI ACCESS</div>
+          <h2>Welcome back</h2>
+          <p>Sign in to your home energy dashboard.</p>
+          <div class="form">
+            <label id="idLabel">EMAIL / MOBILE</label
+            ><input
+              id="loginId"
+              placeholder="Enter registered email or mobile"
+            /><label>PASSWORD</label
+            ><input id="loginPassword" type="password" placeholder="Enter password" /><button
+              class="btn primary full"
+              onclick="enterDashboard()"
+            >
+              Secure Login →</button
+            ><small id="loginHint"
+              >Demo backend user: demo@amppulse.ai / Demo@12345</small
+            >
+            <small id="loginError" style="color:#ff6b6b;display:none"></small>
+          </div>
+        </div>
+      </div>
+
+      <section id="dashboard" class="dashboard hidden">
+        <aside class="sidebar">
+          <a class="brand" href="#" onclick="showLanding()"
+            ><span class="brand-mark">ϟ</span><span>AmpPulse <b>AI</b></span></a
+          >
+          <div class="side-role" id="sideRole">HOME</div>
+          <nav id="sideNav"></nav>
+          <div class="side-bottom">
+            <button onclick="showLanding()">← Back to website</button>
+          </div>
+        </aside>
+        <div class="dash-main">
+          <div class="dash-top">
+            <button class="mobile-menu" onclick="toggleSidebar()">☰</button>
+            <div>
+              <span class="breadcrumb" id="dashRole">Home</span>
+              <h2 id="dashTitle">Good morning, Your Home</h2>
+            </div>
+            <div class="dash-user">
+              <span class="live-dot" id="backendLiveDot">● LIVE</span>
+              <div class="avatar">A</div>
+            </div>
+          </div>
+          <div id="dashContent"></div>
+        </div>
+      </section>
+
+      <div id="toast" class="toast"></div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>
